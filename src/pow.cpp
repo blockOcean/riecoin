@@ -10,7 +10,6 @@
 #include <chain.h>
 #include <primitives/block.h>
 #include <uint256.h>
-#include "bignum.h"
 #include "util.h"
 
 bool isAfterFork1(int nHeight, const Consensus::Params& params)
@@ -33,28 +32,6 @@ bool isSuperblock(int nHeight, const Consensus::Params& params)
     return ((nHeight % params.DifficultyAdjustmentInterval()) == 144) && isInSuperblockInterval(nHeight, params);
 }
 
-CBigNum nthRoot(CBigNum const &n, int root, CBigNum const &lowerBound)
-{
-    CBigNum result = lowerBound;
-    CBigNum delta = lowerBound/2;
-
-    while (delta >= 1)
-    {
-        result += delta;
-        CBigNum aux = result;
-        for (int i = 1; i < root; i++)
-            aux *= result;
-        if (aux > n)
-        {
-            result -= delta;
-            delta >>= 1;
-        }
-        else
-            delta <<= 1;
-    }
-    return result;
-}
-
 unsigned int GetNextWorkRequired(const CBlockIndex* pindexLast, const CBlockHeader *pblock, const Consensus::Params& params)
 {
     assert(pindexLast != nullptr);
@@ -68,11 +45,11 @@ unsigned int GetNextWorkRequired(const CBlockIndex* pindexLast, const CBlockHead
         {
             if (isSuperblock(pindexLast->nHeight+1, params))
             {
-                CBigNum bnNewPow;
+                arith_uint256 bnNewPow;
                 bnNewPow.SetCompact(pindexLast->nBits);
                 bnNewPow *= 95859; // superblock is 4168/136 times more difficult
                 bnNewPow >>= 16; // 95859/65536 ~= (4168/136) ^ 1/9
-                LogPrintf("GetNextWorkRequired superblock difficulty:  %d    %08x  %s\n", pindexLast->nHeight+1, bnNewPow.GetCompact(), bnNewPow.getuint256().ToString());
+                LogPrintf("GetNextWorkRequired superblock difficulty:  %d    %08x  %s\n", pindexLast->nHeight+1, bnNewPow.GetCompact(), bnNewPow.ToString());
                 return bnNewPow.GetCompact();
             }
             else if (isSuperblock(pindexLast->nHeight+1-1, params)) // right after superblock, go back to previous diff
@@ -131,80 +108,99 @@ unsigned int CalculateNextWorkRequired(const CBlockIndex* pindexLast, int64_t nF
 
     // Retarget
     const arith_uint256 arPowLimit = UintToArith256(params.powLimit);
-    const CBigNum bnPowLimit(arPowLimit);
-    CBigNum bnNew;
-    bnNew.SetCompact(pindexLast->nBits);
+    const uint64_t iPowLimit = arPowLimit.GetLow64();
+
+    arith_uint256 arDiff;
+    arDiff.SetCompact(pindexLast->nBits);
+    const uint64_t iDiff = arDiff.GetLow64();
     
     // 9th power (3+RIECOIN_CONSTELLATION_SIZE)
-    arith_uint256 arNewPow = GetBlockProof(*pindexLast);
-    CBigNum bnNewPow(arNewPow);
- 
-    bnNewPow = bnNewPow*params.nPowTargetTimespan;
-    bnNewPow = bnNewPow/nActualTimespan;
+    mpz_t gmpNewPow;
+    mpz_init(gmpNewPow);
+    mpz_ui_pow_ui(gmpNewPow, iDiff, 3 + RIECOIN_CONSTELLATION_SIZE);
+
+    // gmpNewPow*params.nPowTargetTimespan/nActualTimespan
+    mpz_mul_ui(gmpNewPow, gmpNewPow, (uint64_t)params.nPowTargetTimespan);
+    mpz_fdiv_q_ui(gmpNewPow, gmpNewPow, (uint64_t)nActualTimespan);
     
     if (isAfterFork1(pindexLast->nHeight+1, params))
     {
         if (isInSuperblockInterval(pindexLast->nHeight+1, params)) // once per week, our interval contains a superblock
         {
-            bnNewPow *= 68; // * 136/150 to compensate for difficult superblock
-            bnNewPow /= 75;
+            // * 136/150 to compensate for difficult superblock
+            mpz_mul_ui(gmpNewPow, gmpNewPow, 68);
+            mpz_fdiv_q_ui(gmpNewPow, gmpNewPow, 75);
             LogPrintf("Adjusted because has superblock\n");
         }
         else if (isInSuperblockInterval(pindexLast->nHeight, params))
         {
-            bnNewPow *= 75; // * 150/136 to compensate for previous adj
-            bnNewPow /= 68;
+            // * 150/136 to compensate for previous adj
+            mpz_mul_ui(gmpNewPow, gmpNewPow, 75);
+            mpz_fdiv_q_ui(gmpNewPow, gmpNewPow, 68);
             LogPrintf("Adjusted because had superblock\n");
         }
     }
 
-    bnNew = nthRoot(bnNewPow, 3+RIECOIN_CONSTELLATION_SIZE, bnNew/2);
+    uint64_t iNew;
+
+    mpz_t gmpNew;
+    mpz_init(gmpNew);
+    mpz_root(gmpNew, gmpNewPow, 3+RIECOIN_CONSTELLATION_SIZE);
     
-    if (bnNew < bnPowLimit)
-        bnNew = bnPowLimit;
-    else if (bnNew > (unsigned long long)-1)
-        bnNew = (unsigned long long)-1;
+    if (mpz_cmp_ui(gmpNew, (uint64_t)-1) > 0)
+		iNew = (uint64_t)-1;
+	else
+		iNew = mpz_get_ui(gmpNew);
+
+    if (iNew < iPowLimit)
+        iNew = iPowLimit;
  
-    return bnNew.GetCompact();
+    mpz_clear(gmpNewPow);
+    mpz_clear(gmpNew);
+
+    arith_uint256 arNew = iNew;
+
+    return arNew.GetCompact();
 }
 
-unsigned int generatePrimeBase(CBigNum &bnTarget, uint256 hash, bitsType compactBits)
+unsigned int generatePrimeBase(mpz_t gmpTarget, uint256 hash, bitsType compactBits)
 {
-    bnTarget = 1;
-    bnTarget <<= ZEROS_BEFORE_HASH_IN_PRIME;
+    mpz_init_set_ui(gmpTarget, 1);
+    mpz_mul_2exp(gmpTarget, gmpTarget, ZEROS_BEFORE_HASH_IN_PRIME); // 1 << ZEROS_BEFORE_HASH_IN_PRIME
     
     arith_uint256 arHash = UintToArith256(hash);
-
     for ( int i = 0; i < 256; i++ )
     {
-        bnTarget = (bnTarget << 1) + (arHash.GetLow32() & 1);
+        mpz_mul_2exp(gmpTarget, gmpTarget, 1);
+        mpz_add_ui(gmpTarget, gmpTarget, (arHash.GetLow32() & 1));
         arHash >>= 1;
     }
-    CBigNum nBits;
-    nBits.SetCompact(compactBits);
-    if( nBits > nBits.getuint() ) // the protocol stores a compact big int so it supports larger values, but this version of the client does not
+
+    arith_uint256 arBits;
+    arBits.SetCompact(compactBits);
+    if( arBits > arBits.GetLow32() ) // the protocol stores a compact big int so it supports larger values, but this version of the client does not
     {
-        nBits = (unsigned int)-1; // saturate diff at (2**32) - 1, this should be enough for some years ;)
+        arBits = (uint32_t)-1; // saturate diff at (2**32) - 1, this should be enough for some years ;)
     }
+
     const unsigned int significativeDigits =  1 + ZEROS_BEFORE_HASH_IN_PRIME + 256;
-    unsigned int trailingZeros = nBits.getuint();
+    unsigned int trailingZeros = arBits.GetLow32();
     if( trailingZeros < significativeDigits )
         return 0;
+
     trailingZeros -= significativeDigits;
-    bnTarget <<= trailingZeros;
+    mpz_mul_2exp(gmpTarget, gmpTarget, trailingZeros); // gmpTarget <<= trailingZeros
+
     return trailingZeros;
 }
 
-
 bool CheckProofOfWork(uint256 hash, bitsType compactBits, offsetType delta, const Consensus::Params& params)
 {
-//LogPrintf("CheckProofOfWork Hash %s\n", hash.ToString().c_str()); // clo1
-    
     if (hash == params.hashGenesisBlockForPoW)
         return true;
 
-    CBigNum bnTarget;
-    unsigned int trailingZeros = generatePrimeBase(bnTarget, hash, compactBits);
+    mpz_t gmpTarget; // init in generatePrimeBase
+    unsigned int trailingZeros = generatePrimeBase(gmpTarget, hash, compactBits);
 
     if ((trailingZeros < 256) && !params.fPowAllowMinDifficultyBlocks)
     {
@@ -214,69 +210,96 @@ bool CheckProofOfWork(uint256 hash, bitsType compactBits, offsetType delta, cons
             return error("CheckProofOfWork() : candidate larger than allowed %s of %s", delta.ToString().c_str(), deltaLimit.ToString().c_str() );
     }
 
-    CBigNum bigDelta = CBigNum(delta);
-    bnTarget += bigDelta;
+    mpz_t gmpDelta;
+    mpz_init(gmpDelta);
 
-    if ((bnTarget % 210) != 97)
+    uint256 u256Delta = ArithToUint256(delta);
+    mpz_import(gmpDelta, 8, -1, sizeof(uint32_t), 0, 0, u256Delta.begin());
+
+    mpz_add(gmpTarget, gmpTarget, gmpDelta);
+    mpz_clear(gmpDelta);
+
+    if (mpz_fdiv_ui(gmpTarget, 210) != 97) // target % 210 = 97
         return error("CheckProofOfWork() : not valid pow");
 
     // first we do a single test to quickly discard most of the bogus cases
-    if (BN_is_prime_fasttest( &bnTarget, 1, NULL, NULL, NULL, 1) != 1)
+    if (mpz_probab_prime_p(gmpTarget, 1) == 0)
     {
-        //printf("CheckProofOfWork fail  hash: %s  \ntarget: %d nOffset: %s\n", hash2.GetHex().c_str(), nBits, delta.GetHex().c_str());
-        //printf("CheckProofOfWork fail  target: %s  \n", bnTarget.GetHex().c_str());
+        mpz_clear(gmpTarget);
         return error("CheckProofOfWork() : n not prime");
     }
-    bnTarget += 4;
-    if (BN_is_prime_fasttest( &bnTarget, 1, NULL, NULL, NULL, 1) != 1)
+
+    mpz_add_ui(gmpTarget, gmpTarget, 4);
+    if (mpz_probab_prime_p(gmpTarget, 1) == 0)
     {
+        mpz_clear(gmpTarget);
         return error("CheckProofOfWork() : n+4 not prime");
     }
-    bnTarget += 2;
-    if (BN_is_prime_fasttest( &bnTarget, 1, NULL, NULL, NULL, 1) != 1)
+
+    mpz_add_ui(gmpTarget, gmpTarget, 2);
+    if (mpz_probab_prime_p(gmpTarget, 1) == 0)
     {
+        mpz_clear(gmpTarget);
         return error("CheckProofOfWork() : n+6 not prime");
     }
-    bnTarget += 4;
-    if (BN_is_prime_fasttest( &bnTarget, 1, NULL, NULL, NULL, 1) != 1)
+
+    mpz_add_ui(gmpTarget, gmpTarget, 4);
+    if (mpz_probab_prime_p(gmpTarget, 1) == 0)
     {
+        mpz_clear(gmpTarget);
         return error("CheckProofOfWork() : n+10 not prime");
     }
-    bnTarget += 2;
-    if (BN_is_prime_fasttest( &bnTarget, 1, NULL, NULL, NULL, 1) != 1)
+
+    mpz_add_ui(gmpTarget, gmpTarget, 2);
+    if (mpz_probab_prime_p(gmpTarget, 1) == 0)
     {
+        mpz_clear(gmpTarget);
         return error("CheckProofOfWork() : n+12 not prime");
     }
-    bnTarget += 4;
-    if (BN_is_prime_fasttest( &bnTarget, 4, NULL, NULL, NULL, 1) != 1)
+
+    mpz_add_ui(gmpTarget, gmpTarget, 4);
+    if (mpz_probab_prime_p(gmpTarget, 4) == 0)
     {
+        mpz_clear(gmpTarget);
         return error("CheckProofOfWork() : n+16 not prime");
     }
-    bnTarget -= 4;
-    if (BN_is_prime_fasttest( &bnTarget, 3, NULL, NULL, NULL, 0) != 1)
+
+    mpz_sub_ui(gmpTarget, gmpTarget, 4);
+    if (mpz_probab_prime_p(gmpTarget, 3) == 0)
     {
+        mpz_clear(gmpTarget);
         return error("CheckProofOfWork() : n+12 not prime");
     }
-    bnTarget -= 2;
-    if (BN_is_prime_fasttest( &bnTarget, 3, NULL, NULL, NULL, 0) != 1)
+
+    mpz_sub_ui(gmpTarget, gmpTarget, 2);
+    if (mpz_probab_prime_p(gmpTarget, 3) == 0)
     {
+        mpz_clear(gmpTarget);
         return error("CheckProofOfWork() : n+10 not prime");
     }
-    bnTarget -= 4;
-    if (BN_is_prime_fasttest( &bnTarget, 3, NULL, NULL, NULL, 0) != 1)
+
+    mpz_sub_ui(gmpTarget, gmpTarget, 4);
+    if (mpz_probab_prime_p(gmpTarget, 3) == 0)
     {
+        mpz_clear(gmpTarget);
         return error("CheckProofOfWork() : n+6 not prime");
     }
-    bnTarget -= 2;
-    if (BN_is_prime_fasttest( &bnTarget, 3, NULL, NULL, NULL, 0) != 1)
+
+    mpz_sub_ui(gmpTarget, gmpTarget, 2);
+    if (mpz_probab_prime_p(gmpTarget, 3) == 0)
     {
+        mpz_clear(gmpTarget);
         return error("CheckProofOfWork() : n+4 not prime");
     }
-    bnTarget -= 4;
-    if (BN_is_prime_fasttest( &bnTarget, 3, NULL, NULL, NULL, 0) != 1)
+
+    mpz_sub_ui(gmpTarget, gmpTarget, 4);
+    if (mpz_probab_prime_p(gmpTarget, 3) == 0)
     {
+        mpz_clear(gmpTarget);
         return error("CheckProofOfWork() : n not prime");
     }
+
+    mpz_clear(gmpTarget);
 
     return true;
 }

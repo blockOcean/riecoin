@@ -11,7 +11,7 @@
 
 #include <stdint.h>
 #include "primitives/block.h"
-#include "bignum.h"
+#include <gmp.h>
 
 class CBlockHeader;
 class CBlockIndex;
@@ -25,8 +25,7 @@ bool isAfterFork1(int nHeight, const Consensus::Params& params);
 bool isInSuperblockInterval(int nHeight, const Consensus::Params& params);
 bool isSuperblock(int nHeight, const Consensus::Params& params);
 
-CBigNum nthRoot(CBigNum const &n, int root, CBigNum const &lowerBound);
-unsigned int generatePrimeBase(CBigNum &bnTarget, uint256 hash, bitsType compactBits);
+unsigned int generatePrimeBase(mpz_t gmpTarget, uint256 hash, bitsType compactBits);
 unsigned int GetNextWorkRequired(const CBlockIndex* pindexLast, const CBlockHeader *pblock, const Consensus::Params&);
 unsigned int CalculateNextWorkRequired(const CBlockIndex* pindexLast, int64_t nFirstBlockTime, const Consensus::Params&);
 

@@ -38,7 +38,7 @@
 #include <mutex>
 #include <condition_variable>
 
-#include "bignum.h"
+#include <gmp.h>
 
 struct CUpdatedBlock
 {
@@ -1080,6 +1080,31 @@ UniValue verifychain(const JSONRPCRequest& request)
     return CVerifyDB().VerifyDB(Params(), pcoinsTip.get(), nCheckLevel, nCheckDepth);
 }
 
+
+std::string gmpPrimeToString(mpz_t gmpPrime)
+{
+    if (mpz_cmp_ui(gmpPrime, 0) < 1)
+        return std::string("0");
+
+    std::string str;
+
+    mpz_t gmpQ;
+    mpz_init_set(gmpQ, gmpPrime);
+
+    uint32_t rem;
+    while (mpz_cmp_ui(gmpQ, 0) > 0) {
+        rem = mpz_fdiv_q_ui(gmpQ, gmpQ, 10);
+
+        str += "0123456789abcdef"[rem];
+    }
+
+    mpz_clear(gmpQ);
+
+    std::reverse(str.begin(), str.end());
+
+    return str;
+}
+
 UniValue getprimes(const JSONRPCRequest& request)
 {
     if (request.fHelp || request.params.size() != 1)
@@ -1103,27 +1128,39 @@ UniValue getprimes(const JSONRPCRequest& request)
     CBlockIndex* pblockindex = mapBlockIndex[hash];
     ReadBlockFromDisk(block, pblockindex, consensusParams);
 
-    CBigNum p;
-    generatePrimeBase(p, block.GetHashForPoW(), block.nBits);
-    const std::string s = block.nOffset.GetHex();
-    arith_uint256 arq;
-    arq.SetHex(s);
-    
-    CBigNum q(arq);
-    p += q;
+    mpz_t gmpPrime; // init in generatePrimeBase
+    generatePrimeBase(gmpPrime, block.GetHashForPoW(), block.nBits);
+
+    mpz_t gmpOffset;
+    mpz_init(gmpOffset);
+
+    uint256 u256Offset = ArithToUint256(block.nOffset);
+    mpz_import(gmpOffset, 8, -1, sizeof(uint32_t), 0, 0, u256Offset.begin());
+
+    mpz_add(gmpPrime, gmpPrime, gmpOffset);
+    mpz_clear(gmpOffset);
 
     UniValue ret(UniValue::VOBJ);
-    ret.push_back(Pair("p0", p.ToString()));
-    p += 4;
-    ret.push_back(Pair("p1", p.ToString()));
-    p += 2;
-    ret.push_back(Pair("p2", p.ToString()));
-    p += 4;
-    ret.push_back(Pair("p3", p.ToString()));
-    p += 2;
-    ret.push_back(Pair("p4", p.ToString()));
-    p += 4;
-    ret.push_back(Pair("p5", p.ToString()));
+
+    ret.push_back(Pair("p0", gmpPrimeToString(gmpPrime)));
+
+    mpz_add_ui(gmpPrime, gmpPrime, 4);
+    ret.push_back(Pair("p1", gmpPrimeToString(gmpPrime)));
+
+    mpz_add_ui(gmpPrime, gmpPrime, 2);
+    ret.push_back(Pair("p2", gmpPrimeToString(gmpPrime)));
+
+    mpz_add_ui(gmpPrime, gmpPrime, 4);
+    ret.push_back(Pair("p3", gmpPrimeToString(gmpPrime)));
+
+    mpz_add_ui(gmpPrime, gmpPrime, 2);
+    ret.push_back(Pair("p4", gmpPrimeToString(gmpPrime)));
+
+    mpz_add_ui(gmpPrime, gmpPrime, 4);
+    ret.push_back(Pair("p5", gmpPrimeToString(gmpPrime)));
+
+    mpz_clear(gmpPrime);
+
     return ret;
 }
 
