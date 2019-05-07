@@ -81,8 +81,8 @@ static const uint64_t MAX_UPLOAD_TIMEFRAME = 60 * 60 * 24;
 static const bool DEFAULT_BLOCKSONLY = false;
 
 static const bool DEFAULT_FORCEDNSSEED = false;
-static const size_t DEFAULT_MAXRECEIVEBUFFER = 32 * 1024;
-static const size_t DEFAULT_MAXSENDBUFFER    = 32 * 1024;
+static const size_t DEFAULT_MAXRECEIVEBUFFER = 8 * 1024;
+static const size_t DEFAULT_MAXSENDBUFFER    = 8 * 1024;
 
 // NOTE: When adjusting this, update rpcnet:setban's help ("24h")
 static const unsigned int DEFAULT_MISBEHAVING_BANTIME = 60 * 60 * 24;  // Default 24-hour ban
